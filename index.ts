@@ -92,58 +92,60 @@ class UseKeenClient {
 }
 
 // Format a safe MCP-compliant tool result from arbitrary data
+// If the payload looks like UseKeen { result: { results: [...] } },
+// map each item to a text content block. Always include structuredContent passthrough.
 function formatToolSuccess(data: unknown): { content: { type: "text"; text: string }[]; structuredContent?: unknown } {
-  // If data appears to already be MCP content blocks, preserve it safely
-  // Otherwise, stringify in a readable form
-  const asText = (value: unknown) => {
-    try {
-      return typeof value === "string" ? value : JSON.stringify(value, null, 2);
-    } catch {
-      return String(value);
-    }
-  };
+  try {
+    if (
+      data &&
+      typeof data === "object" &&
+      // @ts-ignore dynamic inspection
+      "result" in (data as any) &&
+      // @ts-ignore dynamic inspection
+      (data as any).result && typeof (data as any).result === "object" &&
+      // @ts-ignore dynamic inspection
+      Array.isArray((data as any).result.results)
+    ) {
+      // @ts-ignore dynamic shape
+      const results = (data as any).result.results as unknown[];
+      const content = results
+        .map((item) => {
+          // Prefer well-known fields. Use string content as-is.
+          const textCandidate =
+            typeof (item as any)?.content === "string"
+              ? (item as any).content
+              : typeof (item as any)?.text === "string"
+              ? (item as any).text
+              : undefined;
+          if (typeof textCandidate === "string" && textCandidate.trim().length > 0) {
+            return { type: "text" as const, text: textCandidate };
+          }
+          // Fallback: compact JSON of the item
+          let fallback = "";
+          try {
+            fallback = JSON.stringify(item, null, 2);
+          } catch {
+            fallback = String(item);
+          }
+          return { type: "text" as const, text: fallback };
+        });
 
-  // Normalize a few common non-spec shapes often seen from HTTP APIs
-  // e.g. { result: { results: [...] } } or { results: [...] }
-  let primary: unknown = data;
-  // @ts-ignore - dynamic inspection of unknown
-  if (data && typeof data === "object" && "result" in (data as any)) {
-    // @ts-ignore - dynamic
-    primary = (data as any).result;
-  }
-  // @ts-ignore - dynamic inspection of unknown
-  if (primary && typeof primary === "object" && "results" in (primary as any)) {
-    // @ts-ignore - dynamic
-    const results = (primary as any).results;
-    if (Array.isArray(results)) {
-      const lines: string[] = [];
-      lines.push(`Found ${results.length} result(s). Showing up to 5:`);
-      for (const [i, item] of results.slice(0, 5).entries()) {
-        // Heuristic for common fields
-        const title = typeof item?.title === "string" ? item.title : undefined;
-        const url = typeof item?.url === "string" ? item.url : undefined;
-        const summary = typeof item?.description === "string"
-          ? item.description
-          : typeof item?.snippet === "string"
-          ? item.snippet
-          : undefined;
-        const header = title ?? url ?? `Result #${i + 1}`;
-        lines.push(`- ${header}`);
-        if (url) lines.push(`  ${url}`);
-        if (summary) lines.push(`  ${summary}`);
+      if (content.length > 0) {
+        return { content, structuredContent: data };
       }
-      const text = lines.join("\n");
-      return {
-        content: [{ type: "text", text }],
-        structuredContent: data,
-      };
     }
+  } catch {
+    // ignore and fall back below
   }
 
-  return {
-    content: [{ type: "text", text: asText(data) }],
-    structuredContent: data,
-  };
+  // Fallback: pretty print whatever we got as a single text block
+  let text: string;
+  try {
+    text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+  } catch {
+    text = String(data);
+  }
+  return { content: [{ type: "text", text }], structuredContent: data };
 }
 
 function formatToolError(err: unknown): { content: { type: "text"; text: string }[]; isError: true } {
@@ -178,7 +180,7 @@ async function main(): Promise<void> {
   const server = new Server(
     {
       name: "UseKeen MCP Server",
-      version: "1.3.1",
+      version: "1.3.2",
     },
     {
       capabilities: {
